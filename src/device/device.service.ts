@@ -5,7 +5,6 @@ import { Device, DeviceDocument } from './schema/device.schema';
 import { CreateDeviceDto } from './dto/create-device.dto';
 import { v4 as uuidv4 } from 'uuid';
 import * as PDFDocument from 'pdfkit';
-
 import * as ExcelJS from 'exceljs';
 import { format } from '@fast-csv/format';
 import { Response } from 'express';

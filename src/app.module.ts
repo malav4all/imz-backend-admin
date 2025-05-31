@@ -4,6 +4,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { DeviceModule } from './device/device.module';
 import { VehicleModule } from './vechile/vechile.module';
 import { ClientModule } from './client/client.module';
+import { DriverModule } from './driver/driver.module';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { ClientModule } from './client/client.module';
     DeviceModule,
     VehicleModule,
     ClientModule,
+    DriverModule,
   ],
   controllers: [],
   providers: [],
