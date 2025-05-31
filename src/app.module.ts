@@ -5,6 +5,7 @@ import { DeviceModule } from './device/device.module';
 import { VehicleModule } from './vechile/vechile.module';
 import { ClientModule } from './client/client.module';
 import { DriverModule } from './driver/driver.module';
+import { VehicleMasterModule } from './vehicle-master/vehicle-master.module';
 
 @Module({
   imports: [
@@ -22,6 +23,7 @@ import { DriverModule } from './driver/driver.module';
     VehicleModule,
     ClientModule,
     DriverModule,
+    VehicleMasterModule,
   ],
   controllers: [],
   providers: [],
