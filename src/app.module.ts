@@ -7,6 +7,7 @@ import { ClientModule } from './client/client.module';
 import { DriverModule } from './driver/driver.module';
 import { VehicleMasterModule } from './vehicle-master/vehicle-master.module';
 import { AccountModule } from './account/account.module';
+import { RoleModule } from './role/role.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { AccountModule } from './account/account.module';
     DriverModule,
     VehicleMasterModule,
     AccountModule,
+    RoleModule,
   ],
   controllers: [],
   providers: [],
