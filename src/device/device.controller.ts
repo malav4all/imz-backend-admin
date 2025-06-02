@@ -10,24 +10,54 @@ import {
   HttpException,
   Res,
   Query,
+  Req,
 } from '@nestjs/common';
 import { Response } from 'express';
 import { DeviceService } from './device.service';
 import { CreateDeviceDto } from './dto/create-device.dto';
 import { ApiResponse } from 'src/comman/api-response';
 import { PaginatedResponse, PaginationDto } from 'src/comman/pagination.dto';
+import { Request } from 'express';
 
 @Controller('devices')
 export class DeviceController {
   constructor(private readonly deviceService: DeviceService) {}
 
+  private extractRequestInfo(req: Request) {
+    return {
+      userId: req['user']?.id || req['user']?.userId,
+      ipAddress: this.getClientIp(req),
+      userAgent: req.get('User-Agent') || 'unknown',
+    };
+  }
+
+  private getClientIp(req: Request): string {
+    // Check various headers for the real IP address
+    return (
+      req.get('CF-Connecting-IP') || // Cloudflare
+      req.get('X-Forwarded-For')?.split(',')[0] || // Proxy/Load Balancer
+      req.get('X-Real-IP') || // Nginx
+      req.get('X-Client-IP') || // Apache
+      req.connection?.remoteAddress || // Direct connection
+      req.socket?.remoteAddress || // Socket connection
+      'unknown'
+    );
+  }
+
   @Post()
   async create(
     @Body() createDeviceDto: CreateDeviceDto,
     @Res() res: Response,
+    @Req() req: Request,
   ): Promise<Response> {
     try {
-      const device = await this.deviceService.create(createDeviceDto);
+      const { userId, ipAddress, userAgent } = this.extractRequestInfo(req);
+      const device = await this.deviceService.create(
+        createDeviceDto,
+        userId,
+        ipAddress,
+        userAgent,
+      );
       const response = ApiResponse.success(
         device,
         'Device created successfully',

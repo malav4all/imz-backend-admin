@@ -23,6 +23,8 @@ export class DeviceService {
   async create(
     createDeviceDto: CreateDeviceDto,
     userId?: string,
+    ipAddress?: any,
+    userAgent?: any,
   ): Promise<Device> {
     const startTime = Date.now();
 
@@ -48,6 +50,8 @@ export class DeviceService {
           resource: 'DEVICE',
           message: 'Device creation failed - duplicate modelName',
           userId,
+          ipAddress,
+          userAgent,
           metadata: {
             requestData: createDeviceDto,
             existingDeviceId: existingDevice.deviceId,
@@ -79,6 +83,8 @@ export class DeviceService {
         resource: 'DEVICE',
         message: `Device created successfully: ${savedDevice.modelName}`,
         userId,
+        ipAddress,
+        userAgent,
         metadata: {
           deviceId: savedDevice.deviceId,
           modelName: savedDevice.modelName,
@@ -99,6 +105,8 @@ export class DeviceService {
           resource: 'DEVICE',
           message: `Device creation failed: ${error.message}`,
           userId,
+          ipAddress,
+          userAgent,
           metadata: {
             requestData: createDeviceDto,
             errorType: error.name,
@@ -1025,7 +1033,9 @@ export class DeviceService {
     resource: string;
     message: string;
     userId?: string;
+    ipAddress?: string;
     metadata?: any;
+    userAgent?: any;
     responseTime?: number;
     isError?: boolean;
     errorMessage?: string;
@@ -1037,8 +1047,8 @@ export class DeviceService {
         {
           ...logData,
           timestamp: new Date(),
-          ipAddress: 'internal',
-          userAgent: 'device-service',
+          ipAddress: logData.ipAddress,
+          userAgent: logData.userAgent,
         },
         {
           timeout: 5000, // 5 second timeout
