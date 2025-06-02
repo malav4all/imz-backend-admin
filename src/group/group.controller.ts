@@ -9,12 +9,14 @@ import {
   Query,
   HttpStatus,
   ValidationPipe,
+  Res,
 } from '@nestjs/common';
 import { CreateGroupDto } from './dto/create-group.dto';
 import { UpdateGroupDto } from './dto/update-group.dto';
 import { GroupQueryDto } from './dto/group-query.dto';
 import { GroupsService } from './group.service';
 import { ApiResponse } from 'src/comman/api-response';
+import { Response } from 'express';
 
 @Controller('groups')
 export class GroupsController {
@@ -49,6 +51,34 @@ export class GroupsController {
         error.message,
         HttpStatus.BAD_REQUEST,
       );
+    }
+  }
+
+  @Get('export')
+  async exportDevices(
+    @Query('format') format: 'pdf' | 'xlsx' | 'csv',
+    @Res() res: Response,
+  ): Promise<any> {
+    try {
+      const devices = await this.groupsService.findAllWithoutPagination();
+
+      switch (format) {
+        case 'csv':
+          return this.groupsService.exportToCSV(devices, res);
+        case 'xlsx':
+          return this.groupsService.exportToXLSX(devices, res);
+        case 'pdf':
+          return this.groupsService.exportToPDF(devices, res);
+        default:
+          return res
+            .status(HttpStatus.BAD_REQUEST)
+            .json({ message: 'Invalid format' });
+      }
+    } catch (error) {
+      return res.status(HttpStatus.INTERNAL_SERVER_ERROR).json({
+        message: 'Failed to export devices',
+        error: error.message,
+      });
     }
   }
 

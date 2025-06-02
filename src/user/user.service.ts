@@ -3,156 +3,320 @@ import {
   NotFoundException,
   ConflictException,
   UnauthorizedException,
+  Logger,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import * as bcrypt from 'bcrypt';
 import { JwtService } from '@nestjs/jwt';
+import { Response } from 'express';
+import * as PDFDocument from 'pdfkit';
+import { format } from 'fast-csv';
+import * as ExcelJS from 'exceljs';
+import axios from 'axios';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { UserQueryDto } from './dto/user-query.dto';
 import { User, UserDocument, UserStatus } from './schema/user.schema';
 import { PaginatedResponse } from 'src/comman/pagination.dto';
 import { LoginDto } from './dto/login.dto';
-import { Response } from 'express';
-import * as PDFDocument from 'pdfkit';
-import { format } from 'fast-csv';
-import * as ExcelJS from 'exceljs';
 
 @Injectable()
 export class UserService {
+  private readonly logger = new Logger(UserService.name);
+  private readonly logsServiceUrl =
+    process.env.LOGS_SERVICE_URL || 'http://localhost:3001/logs';
+
   constructor(
     @InjectModel(User.name) private userModel: Model<UserDocument>,
     private jwtService: JwtService,
   ) {}
 
-  async login(loginDto: LoginDto): Promise<any> {
-    const { username, password } = loginDto;
-
-    // Find user with aggregation to populate related data
-    const users = await this.userModel.aggregate([
-      {
-        $match: {
-          username: username,
-          status: UserStatus.ACTIVE, // Only allow active users to login
+  private async sendLog(logData: {
+    method: string;
+    url: string;
+    statusCode: number;
+    operation: string;
+    resource: string;
+    message: string;
+    userId?: string;
+    metadata?: any;
+    responseTime?: number;
+    isError?: boolean;
+    errorMessage?: string;
+    stackTrace?: string;
+    ipAddress?: string;
+    userAgent?: string;
+  }): Promise<void> {
+    try {
+      await axios.post(
+        this.logsServiceUrl,
+        {
+          ...logData,
+          timestamp: new Date(),
+          ipAddress: logData.ipAddress || 'internal',
+          userAgent: logData.userAgent || 'user-service',
         },
-      },
-      {
-        $lookup: {
-          from: 'accounts',
-          localField: 'accountId',
-          foreignField: '_id',
-          as: 'account',
-          // pipeline: [{ $project: { name: 1, _id: 1 } }],
-        },
-      },
-      {
-        $lookup: {
-          from: 'groups',
-          localField: 'groupId',
-          foreignField: '_id',
-          as: 'group',
-          // pipeline: [{ $project: { name: 1, _id: 1 } }],
-        },
-      },
-      {
-        $lookup: {
-          from: 'roles',
-          localField: 'roleId',
-          foreignField: '_id',
-          as: 'role',
-          pipeline: [{ $project: { name: 1, modulePermissions: 1, _id: 1 } }],
-        },
-      },
-      {
-        $addFields: {
-          account: { $arrayElemAt: ['$account', 0] },
-          group: { $arrayElemAt: ['$group', 0] },
-          role: { $arrayElemAt: ['$role', 0] },
-          fullName: {
-            $concat: [
-              '$firstName',
-              {
-                $cond: [
-                  { $ne: ['$middleName', null] },
-                  { $concat: [' ', '$middleName'] },
-                  '',
-                ],
-              },
-              ' ',
-              '$lastName',
-            ],
+        {
+          timeout: 5000, // 5 second timeout
+          headers: {
+            'Content-Type': 'application/json',
           },
         },
-      },
-      {
-        $limit: 1,
-      },
-    ]);
-
-    if (!users || users.length === 0) {
-      throw new UnauthorizedException('Invalid username');
+      );
+    } catch (error) {
+      // Silent fail - don't let logging break main functionality
+      this.logger.warn(`Failed to send log to microservice: ${error.message}`);
     }
+  }
 
-    const user = users[0];
+  async login(
+    loginDto: LoginDto,
+    ipAddress?: string,
+    userAgent?: string,
+  ): Promise<any> {
+    const startTime = Date.now();
+    const { username, password } = loginDto;
 
-    // Verify password
-    const isPasswordValid = await bcrypt.compare(password, user.password);
-    if (!isPasswordValid) {
-      throw new UnauthorizedException('Invalid  password');
+    try {
+      // Find user with aggregation to populate related data
+      const users = await this.userModel.aggregate([
+        {
+          $match: {
+            username: username,
+            status: UserStatus.ACTIVE, // Only allow active users to login
+          },
+        },
+        {
+          $lookup: {
+            from: 'accounts',
+            localField: 'accountId',
+            foreignField: '_id',
+            as: 'account',
+          },
+        },
+        {
+          $lookup: {
+            from: 'groups',
+            localField: 'groupId',
+            foreignField: '_id',
+            as: 'group',
+          },
+        },
+        {
+          $lookup: {
+            from: 'roles',
+            localField: 'roleId',
+            foreignField: '_id',
+            as: 'role',
+            pipeline: [{ $project: { name: 1, modulePermissions: 1, _id: 1 } }],
+          },
+        },
+        {
+          $addFields: {
+            account: { $arrayElemAt: ['$account', 0] },
+            group: { $arrayElemAt: ['$group', 0] },
+            role: { $arrayElemAt: ['$role', 0] },
+            fullName: {
+              $concat: [
+                '$firstName',
+                {
+                  $cond: [
+                    { $ne: ['$middleName', null] },
+                    { $concat: [' ', '$middleName'] },
+                    '',
+                  ],
+                },
+                ' ',
+                '$lastName',
+              ],
+            },
+          },
+        },
+        {
+          $limit: 1,
+        },
+      ]);
+
+      if (!users || users.length === 0) {
+        await this.sendLog({
+          method: 'POST',
+          url: '/auth/login',
+          statusCode: 401,
+          operation: 'USER_LOGIN',
+          resource: 'users',
+          message: 'Login failed - invalid username',
+          metadata: {
+            username,
+            reason: 'username_not_found',
+          },
+          responseTime: Date.now() - startTime,
+          isError: true,
+          errorMessage: 'Invalid username',
+          ipAddress,
+          userAgent,
+        });
+
+        throw new UnauthorizedException('Invalid username');
+      }
+
+      const user = users[0];
+
+      // Verify password
+      const isPasswordValid = await bcrypt.compare(password, user.password);
+      if (!isPasswordValid) {
+        await this.sendLog({
+          method: 'POST',
+          url: '/auth/login',
+          statusCode: 401,
+          operation: 'USER_LOGIN',
+          resource: 'users',
+          message: 'Login failed - invalid password',
+          userId: user._id.toString(),
+          metadata: {
+            username,
+            userId: user._id.toString(),
+            reason: 'invalid_password',
+          },
+          responseTime: Date.now() - startTime,
+          isError: true,
+          errorMessage: 'Invalid password',
+          ipAddress,
+          userAgent,
+        });
+
+        throw new UnauthorizedException('Invalid password');
+      }
+
+      // Check if user has a role assigned
+      if (!user.role) {
+        await this.sendLog({
+          method: 'POST',
+          url: '/auth/login',
+          statusCode: 401,
+          operation: 'USER_LOGIN',
+          resource: 'users',
+          message: 'Login failed - no role assigned',
+          userId: user._id.toString(),
+          metadata: {
+            username,
+            userId: user._id.toString(),
+            reason: 'no_role_assigned',
+          },
+          responseTime: Date.now() - startTime,
+          isError: true,
+          errorMessage: 'User has no role assigned',
+          ipAddress,
+          userAgent,
+        });
+
+        throw new UnauthorizedException('User has no role assigned');
+      }
+
+      // Generate JWT token
+      const payload = {
+        sub: user._id.toString(),
+        username: user.username,
+        email: user.email,
+        roleId: user.roleId?.toString(),
+        roleName: user.role?.name,
+        permissions: user.role?.permissions || [],
+        accountId: user.accountId?.toString(),
+        groupId: user.groupId?.toString(),
+      };
+
+      const accessToken = this.jwtService.sign(payload);
+      const expiresIn = 3600; // 1 hour in seconds
+
+      // Prepare response (exclude password)
+      const userResponse = {
+        id: user._id.toString(),
+        username: user.username,
+        firstName: user.firstName,
+        middleName: user.middleName,
+        lastName: user.lastName,
+        fullName: user.fullName,
+        email: user.email,
+        contactNo: user.contactNo,
+        type: user.type,
+        status: user.status,
+        account: user.account,
+        group: user.group,
+        role: user.role,
+      };
+
+      await this.sendLog({
+        method: 'POST',
+        url: '/auth/login',
+        statusCode: 200,
+        operation: 'USER_LOGIN',
+        resource: 'users',
+        message: 'User logged in successfully',
+        userId: user._id.toString(),
+        metadata: {
+          username,
+          userId: user._id.toString(),
+          userEmail: user.email,
+          roleName: user.role?.name,
+          accountName: user.account?.accountName,
+          groupName: user.group?.groupName,
+          tokenExpiresIn: expiresIn,
+        },
+        responseTime: Date.now() - startTime,
+        ipAddress,
+        userAgent,
+      });
+
+      return {
+        user: userResponse,
+        accessToken,
+        tokenType: 'Bearer',
+        expiresIn,
+      };
+    } catch (error) {
+      if (!(error instanceof UnauthorizedException)) {
+        await this.sendLog({
+          method: 'POST',
+          url: '/auth/login',
+          statusCode: 500,
+          operation: 'USER_LOGIN',
+          resource: 'users',
+          message: 'Login failed with unexpected error',
+          metadata: {
+            username,
+          },
+          responseTime: Date.now() - startTime,
+          isError: true,
+          errorMessage: error.message,
+          stackTrace: error.stack,
+          ipAddress,
+          userAgent,
+        });
+      }
+      throw error;
     }
-
-    // Check if user has a role assigned
-    if (!user.role) {
-      throw new UnauthorizedException('User has no role assigned');
-    }
-
-    // Generate JWT token
-    const payload = {
-      sub: user._id.toString(),
-      username: user.username,
-      email: user.email,
-      roleId: user.roleId?.toString(),
-      roleName: user.role?.name,
-      permissions: user.role?.permissions || [],
-      accountId: user.accountId?.toString(),
-      groupId: user.groupId?.toString(),
-    };
-
-    const accessToken = this.jwtService.sign(payload);
-    const expiresIn = 3600; // 1 hour in seconds
-
-    // Prepare response (exclude password)
-    const userResponse = {
-      id: user._id.toString(),
-      username: user.username,
-      firstName: user.firstName,
-      middleName: user.middleName,
-      lastName: user.lastName,
-      fullName: user.fullName,
-      email: user.email,
-      contactNo: user.contactNo,
-      type: user.type,
-      status: user.status,
-      account: user.account,
-      group: user.group,
-      role: user.role,
-    };
-
-    return {
-      user: userResponse,
-      accessToken,
-      tokenType: 'Bearer',
-      expiresIn,
-    };
   }
 
   async validateUser(userId: string): Promise<any> {
-    if (!Types.ObjectId.isValid(userId)) {
-      return null;
-    }
+    const startTime = Date.now();
 
     try {
+      if (!Types.ObjectId.isValid(userId)) {
+        await this.sendLog({
+          method: 'GET',
+          url: '/auth/validate',
+          statusCode: 400,
+          operation: 'VALIDATE_USER',
+          resource: 'users',
+          message: 'User validation failed - invalid user ID format',
+          metadata: { userId },
+          responseTime: Date.now() - startTime,
+          isError: true,
+          errorMessage: 'Invalid user ID format',
+        });
+        return null;
+      }
+
       const users = await this.userModel.aggregate([
         {
           $match: {
@@ -219,6 +383,18 @@ export class UserService {
       ]);
 
       if (!users || users.length === 0) {
+        await this.sendLog({
+          method: 'GET',
+          url: '/auth/validate',
+          statusCode: 404,
+          operation: 'VALIDATE_USER',
+          resource: 'users',
+          message: 'User validation failed - user not found',
+          metadata: { userId },
+          responseTime: Date.now() - startTime,
+          isError: true,
+          errorMessage: 'User not found or inactive',
+        });
         return null;
       }
 
@@ -226,297 +402,765 @@ export class UserService {
 
       // Check if user has a role assigned (important for authorization)
       if (!user.role) {
+        await this.sendLog({
+          method: 'GET',
+          url: '/auth/validate',
+          statusCode: 401,
+          operation: 'VALIDATE_USER',
+          resource: 'users',
+          message: 'User validation failed - no role assigned',
+          userId,
+          metadata: { userId, username: user.username },
+          responseTime: Date.now() - startTime,
+          isError: true,
+          errorMessage: 'User has no role assigned',
+        });
         return null;
       }
 
+      await this.sendLog({
+        method: 'GET',
+        url: '/auth/validate',
+        statusCode: 200,
+        operation: 'VALIDATE_USER',
+        resource: 'users',
+        message: 'User validated successfully',
+        userId,
+        metadata: {
+          userId,
+          username: user.username,
+          roleName: user.role?.name,
+        },
+        responseTime: Date.now() - startTime,
+      });
+
       return user;
     } catch (error) {
+      await this.sendLog({
+        method: 'GET',
+        url: '/auth/validate',
+        statusCode: 500,
+        operation: 'VALIDATE_USER',
+        resource: 'users',
+        message: 'User validation failed with unexpected error',
+        metadata: { userId },
+        responseTime: Date.now() - startTime,
+        isError: true,
+        errorMessage: error.message,
+        stackTrace: error.stack,
+      });
+
       // Log error if needed
       console.error('Error validating user:', error);
       return null;
     }
   }
 
-  async create(createUserDto: CreateUserDto): Promise<User> {
-    // Check if username or email already exists
-    const existingUser = await this.userModel.findOne({
-      $or: [
-        { username: createUserDto.username },
-        { email: createUserDto.email },
-      ],
-    });
+  async create(createUserDto: CreateUserDto, userId?: string): Promise<User> {
+    const startTime = Date.now();
 
-    if (existingUser) {
-      throw new ConflictException('Username or email already exists');
-    }
-
-    // Hash password
-    const saltRounds = 10;
-    const hashedPassword = await bcrypt.hash(
-      createUserDto.password,
-      saltRounds,
-    );
-
-    const userData = {
-      ...createUserDto,
-      password: hashedPassword,
-      accountId: createUserDto.accountId
-        ? new Types.ObjectId(createUserDto.accountId)
-        : undefined,
-      groupId: createUserDto.groupId
-        ? new Types.ObjectId(createUserDto.groupId)
-        : undefined,
-      roleId: new Types.ObjectId(createUserDto.roleId),
-    };
-
-    const createdUser = new this.userModel(userData);
-    return createdUser.save();
-  }
-
-  async findAll(queryDto: UserQueryDto): Promise<PaginatedResponse<any>> {
-    const {
-      page = 1,
-      limit = 10,
-      search,
-      //   type,
-      status,
-      accountId,
-      groupId,
-    } = queryDto;
-    const skip = (page - 1) * limit;
-
-    // Build match conditions
-    const matchConditions: any = {};
-
-    if (search) {
-      matchConditions.$or = [
-        { username: { $regex: search, $options: 'i' } },
-        { firstName: { $regex: search, $options: 'i' } },
-        { lastName: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
-      ];
-    }
-
-    // if (type) matchConditions.type = type;
-    if (status) matchConditions.status = status;
-    if (accountId) matchConditions.accountId = new Types.ObjectId(accountId);
-    if (groupId) matchConditions.groupId = new Types.ObjectId(groupId);
-
-    const aggregationPipeline: any = [
-      { $match: matchConditions },
-      {
-        $lookup: {
-          from: 'accounts',
-          localField: 'accountId',
-          foreignField: '_id',
-          as: 'account',
-          pipeline: [{ $project: { accountName: 1, _id: 1 } }],
-        },
-      },
-      {
-        $lookup: {
-          from: 'groups',
-          localField: 'groupId',
-          foreignField: '_id',
-          as: 'group',
-          pipeline: [{ $project: { groupName: 1, _id: 1 } }],
-        },
-      },
-      {
-        $lookup: {
-          from: 'roles',
-          localField: 'roleId',
-          foreignField: '_id',
-          as: 'role',
-          pipeline: [{ $project: { name: 1, permissions: 1, _id: 1 } }],
-        },
-      },
-      {
-        $addFields: {
-          account: { $arrayElemAt: ['$account', 0] },
-          group: { $arrayElemAt: ['$group', 0] },
-          role: { $arrayElemAt: ['$role', 0] },
-          fullName: {
-            $concat: [
-              '$firstName',
-              {
-                $cond: [
-                  { $ne: ['$middleName', null] },
-                  { $concat: [' ', '$middleName'] },
-                  '',
-                ],
-              },
-              ' ',
-              '$lastName',
-            ],
-          },
-        },
-      },
-      {
-        $project: {
-          password: 0,
-        },
-      },
-      { $sort: { createdAt: -1 } },
-    ];
-
-    // Get total count
-    const totalPipeline = [{ $match: matchConditions }, { $count: 'total' }];
-
-    const [users, totalResult] = await Promise.all([
-      this.userModel.aggregate([
-        ...aggregationPipeline,
-        { $skip: skip },
-        { $limit: limit },
-      ]),
-      this.userModel.aggregate(totalPipeline),
-    ]);
-
-    const total = totalResult[0]?.total || 0;
-
-    return new PaginatedResponse(users, page, limit, total);
-  }
-
-  async findOne(id: string): Promise<any> {
-    if (!Types.ObjectId.isValid(id)) {
-      throw new NotFoundException('Invalid user ID');
-    }
-
-    const users = await this.userModel.aggregate([
-      { $match: { _id: new Types.ObjectId(id) } },
-      {
-        $lookup: {
-          from: 'accounts',
-          localField: 'accountId',
-          foreignField: '_id',
-          as: 'account',
-          pipeline: [{ $project: { name: 1, _id: 1 } }],
-        },
-      },
-      {
-        $lookup: {
-          from: 'groups',
-          localField: 'groupId',
-          foreignField: '_id',
-          as: 'group',
-          pipeline: [{ $project: { name: 1, _id: 1 } }],
-        },
-      },
-      {
-        $addFields: {
-          account: { $arrayElemAt: ['$account', 0] },
-          group: { $arrayElemAt: ['$group', 0] },
-          role: { $arrayElemAt: ['$role', 0] },
-          fullName: {
-            $concat: [
-              '$firstName',
-              {
-                $cond: [
-                  { $ne: ['$middleName', null] },
-                  { $concat: [' ', '$middleName'] },
-                  '',
-                ],
-              },
-              ' ',
-              '$lastName',
-            ],
-          },
-        },
-      },
-      {
-        $project: {
-          password: 0, // Exclude password from response
-        },
-      },
-    ]);
-
-    if (!users || users.length === 0) {
-      throw new NotFoundException('User not found');
-    }
-
-    return users[0];
-  }
-
-  async update(id: string, updateUserDto: UpdateUserDto): Promise<any> {
-    if (!Types.ObjectId.isValid(id)) {
-      throw new NotFoundException('Invalid user ID');
-    }
-
-    // Check if username or email already exists (excluding current user)
-    if (updateUserDto.username || updateUserDto.email) {
-      const conditions: any[] = [];
-      if (updateUserDto.username) {
-        conditions.push({ username: updateUserDto.username });
-      }
-      if (updateUserDto.email) {
-        conditions.push({ email: updateUserDto.email });
-      }
-
+    try {
+      // Check if username or email already exists
       const existingUser = await this.userModel.findOne({
-        $and: [{ _id: { $ne: new Types.ObjectId(id) } }, { $or: conditions }],
+        $or: [
+          { username: createUserDto.username },
+          { email: createUserDto.email },
+        ],
       });
 
       if (existingUser) {
+        await this.sendLog({
+          method: 'POST',
+          url: '/users',
+          statusCode: 409,
+          operation: 'CREATE_USER',
+          resource: 'users',
+          message: 'User creation failed - username or email already exists',
+          userId,
+          metadata: {
+            requestedUsername: createUserDto.username,
+            requestedEmail: createUserDto.email,
+            conflictingField:
+              existingUser.username === createUserDto.username
+                ? 'username'
+                : 'email',
+          },
+          responseTime: Date.now() - startTime,
+          isError: true,
+          errorMessage: 'Username or email already exists',
+        });
+
         throw new ConflictException('Username or email already exists');
       }
+
+      // Hash password
+      const saltRounds = 10;
+      const hashedPassword = await bcrypt.hash(
+        createUserDto.password,
+        saltRounds,
+      );
+
+      const userData = {
+        ...createUserDto,
+        password: hashedPassword,
+        accountId: createUserDto.accountId
+          ? new Types.ObjectId(createUserDto.accountId)
+          : undefined,
+        groupId: createUserDto.groupId
+          ? new Types.ObjectId(createUserDto.groupId)
+          : undefined,
+        roleId: new Types.ObjectId(createUserDto.roleId),
+      };
+
+      const createdUser = new this.userModel(userData);
+      const savedUser: any = await createdUser.save();
+
+      await this.sendLog({
+        method: 'POST',
+        url: '/users',
+        statusCode: 201,
+        operation: 'CREATE_USER',
+        resource: 'users',
+        message: 'User created successfully',
+        userId,
+        metadata: {
+          createdUserId: savedUser._id.toString(),
+          username: savedUser.username,
+          email: savedUser.email,
+          firstName: savedUser.firstName,
+          lastName: savedUser.lastName,
+          // type: savedUser.type,
+          status: savedUser.status,
+          roleId: createUserDto.roleId,
+          accountId: createUserDto.accountId,
+          groupId: createUserDto.groupId,
+        },
+        responseTime: Date.now() - startTime,
+      });
+
+      return savedUser;
+    } catch (error) {
+      if (!(error instanceof ConflictException)) {
+        await this.sendLog({
+          method: 'POST',
+          url: '/users',
+          statusCode: 500,
+          operation: 'CREATE_USER',
+          resource: 'users',
+          message: 'User creation failed with unexpected error',
+          userId,
+          metadata: {
+            userData: { ...createUserDto, password: '[REDACTED]' },
+          },
+          responseTime: Date.now() - startTime,
+          isError: true,
+          errorMessage: error.message,
+          stackTrace: error.stack,
+        });
+      }
+      throw error;
     }
-
-    const updateData = {
-      ...updateUserDto,
-      accountId: updateUserDto.accountId
-        ? new Types.ObjectId(updateUserDto.accountId)
-        : undefined,
-      groupId: updateUserDto.groupId
-        ? new Types.ObjectId(updateUserDto.groupId)
-        : undefined,
-      roleId: updateUserDto.roleId
-        ? new Types.ObjectId(updateUserDto.roleId)
-        : undefined,
-    };
-
-    const updatedUser = await this.userModel.findByIdAndUpdate(id, updateData, {
-      new: true,
-      runValidators: true,
-    });
-
-    if (!updatedUser) {
-      throw new NotFoundException('User not found');
-    }
-
-    return this.findOne(id);
   }
 
-  async remove(id: string): Promise<void> {
-    if (!Types.ObjectId.isValid(id)) {
-      throw new NotFoundException('Invalid user ID');
-    }
+  async findAll(
+    queryDto: UserQueryDto,
+    userId?: string,
+  ): Promise<PaginatedResponse<any>> {
+    const startTime = Date.now();
 
-    const result = await this.userModel.findByIdAndDelete(id);
-    if (!result) {
-      throw new NotFoundException('User not found');
+    try {
+      const {
+        page = 1,
+        limit = 10,
+        search,
+        status,
+        accountId,
+        groupId,
+      } = queryDto;
+      const skip = (page - 1) * limit;
+
+      // Build match conditions
+      const matchConditions: any = {};
+
+      if (search) {
+        matchConditions.$or = [
+          { username: { $regex: search, $options: 'i' } },
+          { firstName: { $regex: search, $options: 'i' } },
+          { lastName: { $regex: search, $options: 'i' } },
+          { email: { $regex: search, $options: 'i' } },
+        ];
+      }
+
+      if (status) matchConditions.status = status;
+      if (accountId) matchConditions.accountId = new Types.ObjectId(accountId);
+      if (groupId) matchConditions.groupId = new Types.ObjectId(groupId);
+
+      const aggregationPipeline: any = [
+        { $match: matchConditions },
+        {
+          $lookup: {
+            from: 'accounts',
+            localField: 'accountId',
+            foreignField: '_id',
+            as: 'account',
+            pipeline: [{ $project: { accountName: 1, _id: 1 } }],
+          },
+        },
+        {
+          $lookup: {
+            from: 'groups',
+            localField: 'groupId',
+            foreignField: '_id',
+            as: 'group',
+            pipeline: [{ $project: { groupName: 1, _id: 1 } }],
+          },
+        },
+        {
+          $lookup: {
+            from: 'roles',
+            localField: 'roleId',
+            foreignField: '_id',
+            as: 'role',
+            pipeline: [{ $project: { name: 1, permissions: 1, _id: 1 } }],
+          },
+        },
+        {
+          $addFields: {
+            account: { $arrayElemAt: ['$account', 0] },
+            group: { $arrayElemAt: ['$group', 0] },
+            role: { $arrayElemAt: ['$role', 0] },
+            fullName: {
+              $concat: [
+                '$firstName',
+                {
+                  $cond: [
+                    { $ne: ['$middleName', null] },
+                    { $concat: [' ', '$middleName'] },
+                    '',
+                  ],
+                },
+                ' ',
+                '$lastName',
+              ],
+            },
+          },
+        },
+        {
+          $project: {
+            password: 0,
+          },
+        },
+        { $sort: { createdAt: -1 } },
+      ];
+
+      // Get total count
+      const totalPipeline = [{ $match: matchConditions }, { $count: 'total' }];
+
+      const [users, totalResult] = await Promise.all([
+        this.userModel.aggregate([
+          ...aggregationPipeline,
+          { $skip: skip },
+          { $limit: limit },
+        ]),
+        this.userModel.aggregate(totalPipeline),
+      ]);
+
+      const total = totalResult[0]?.total || 0;
+      const result = new PaginatedResponse(users, page, limit, total);
+
+      await this.sendLog({
+        method: 'GET',
+        url: '/users',
+        statusCode: 200,
+        operation: 'LIST_USERS',
+        resource: 'users',
+        message: 'Users retrieved successfully',
+        userId,
+        metadata: {
+          page,
+          limit,
+          total,
+          resultCount: users.length,
+          searchTerm: search,
+          filters: { status, accountId, groupId },
+          hasFilters: !!(search || status || accountId || groupId),
+        },
+        responseTime: Date.now() - startTime,
+      });
+
+      return result;
+    } catch (error) {
+      await this.sendLog({
+        method: 'GET',
+        url: '/users',
+        statusCode: 500,
+        operation: 'LIST_USERS',
+        resource: 'users',
+        message: 'Failed to retrieve users',
+        userId,
+        metadata: {
+          query: queryDto,
+        },
+        responseTime: Date.now() - startTime,
+        isError: true,
+        errorMessage: error.message,
+        stackTrace: error.stack,
+      });
+      throw error;
     }
   }
 
-  async updatePassword(id: string, newPassword: string): Promise<void> {
-    if (!Types.ObjectId.isValid(id)) {
-      throw new NotFoundException('Invalid user ID');
-    }
+  async findOne(id: string, userId?: string): Promise<any> {
+    const startTime = Date.now();
 
-    const saltRounds = 10;
-    const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
+    try {
+      if (!Types.ObjectId.isValid(id)) {
+        await this.sendLog({
+          method: 'GET',
+          url: `/users/${id}`,
+          statusCode: 400,
+          operation: 'GET_USER',
+          resource: 'users',
+          message: 'Invalid user ID format',
+          userId,
+          metadata: { requestedUserId: id },
+          responseTime: Date.now() - startTime,
+          isError: true,
+          errorMessage: 'Invalid user ID',
+        });
 
-    const result = await this.userModel.findByIdAndUpdate(
-      id,
-      { password: hashedPassword },
-      { new: true },
-    );
+        throw new NotFoundException('Invalid user ID');
+      }
 
-    if (!result) {
-      throw new NotFoundException('User not found');
+      const users = await this.userModel.aggregate([
+        { $match: { _id: new Types.ObjectId(id) } },
+        {
+          $lookup: {
+            from: 'accounts',
+            localField: 'accountId',
+            foreignField: '_id',
+            as: 'account',
+            pipeline: [{ $project: { name: 1, _id: 1 } }],
+          },
+        },
+        {
+          $lookup: {
+            from: 'groups',
+            localField: 'groupId',
+            foreignField: '_id',
+            as: 'group',
+            pipeline: [{ $project: { name: 1, _id: 1 } }],
+          },
+        },
+        {
+          $addFields: {
+            account: { $arrayElemAt: ['$account', 0] },
+            group: { $arrayElemAt: ['$group', 0] },
+            role: { $arrayElemAt: ['$role', 0] },
+            fullName: {
+              $concat: [
+                '$firstName',
+                {
+                  $cond: [
+                    { $ne: ['$middleName', null] },
+                    { $concat: [' ', '$middleName'] },
+                    '',
+                  ],
+                },
+                ' ',
+                '$lastName',
+              ],
+            },
+          },
+        },
+        {
+          $project: {
+            password: 0, // Exclude password from response
+          },
+        },
+      ]);
+
+      if (!users || users.length === 0) {
+        await this.sendLog({
+          method: 'GET',
+          url: `/users/${id}`,
+          statusCode: 404,
+          operation: 'GET_USER',
+          resource: 'users',
+          message: 'User not found',
+          userId,
+          metadata: { requestedUserId: id },
+          responseTime: Date.now() - startTime,
+          isError: true,
+          errorMessage: 'User not found',
+        });
+
+        throw new NotFoundException('User not found');
+      }
+
+      const user = users[0];
+
+      await this.sendLog({
+        method: 'GET',
+        url: `/users/${id}`,
+        statusCode: 200,
+        operation: 'GET_USER',
+        resource: 'users',
+        message: 'User retrieved successfully',
+        userId,
+        metadata: {
+          requestedUserId: id,
+          foundUsername: user.username,
+          foundUserEmail: user.email,
+          foundUserStatus: user.status,
+        },
+        responseTime: Date.now() - startTime,
+      });
+
+      return user;
+    } catch (error) {
+      if (!(error instanceof NotFoundException)) {
+        await this.sendLog({
+          method: 'GET',
+          url: `/users/${id}`,
+          statusCode: 500,
+          operation: 'GET_USER',
+          resource: 'users',
+          message: 'Unexpected error while retrieving user',
+          userId,
+          metadata: { requestedUserId: id },
+          responseTime: Date.now() - startTime,
+          isError: true,
+          errorMessage: error.message,
+          stackTrace: error.stack,
+        });
+      }
+      throw error;
     }
   }
 
-  async findAllWithoutPagination(): Promise<any[]> {
+  async update(
+    id: string,
+    updateUserDto: UpdateUserDto,
+    userId?: string,
+  ): Promise<any> {
+    const startTime = Date.now();
+
+    try {
+      if (!Types.ObjectId.isValid(id)) {
+        await this.sendLog({
+          method: 'PATCH',
+          url: `/users/${id}`,
+          statusCode: 400,
+          operation: 'UPDATE_USER',
+          resource: 'users',
+          message: 'Invalid user ID format',
+          userId,
+          metadata: { targetUserId: id, updateData: updateUserDto },
+          responseTime: Date.now() - startTime,
+          isError: true,
+          errorMessage: 'Invalid user ID',
+        });
+
+        throw new NotFoundException('Invalid user ID');
+      }
+
+      // Check if username or email already exists (excluding current user)
+      if (updateUserDto.username || updateUserDto.email) {
+        const conditions: any[] = [];
+        if (updateUserDto.username) {
+          conditions.push({ username: updateUserDto.username });
+        }
+        if (updateUserDto.email) {
+          conditions.push({ email: updateUserDto.email });
+        }
+
+        const existingUser = await this.userModel.findOne({
+          $and: [{ _id: { $ne: new Types.ObjectId(id) } }, { $or: conditions }],
+        });
+
+        if (existingUser) {
+          await this.sendLog({
+            method: 'PATCH',
+            url: `/users/${id}`,
+            statusCode: 409,
+            operation: 'UPDATE_USER',
+            resource: 'users',
+            message: 'User update failed - username or email already exists',
+            userId,
+            metadata: {
+              targetUserId: id,
+              updateData: updateUserDto,
+              conflictingUsername: updateUserDto.username,
+              conflictingEmail: updateUserDto.email,
+            },
+            responseTime: Date.now() - startTime,
+            isError: true,
+            errorMessage: 'Username or email already exists',
+          });
+
+          throw new ConflictException('Username or email already exists');
+        }
+      }
+
+      const updateData = {
+        ...updateUserDto,
+        accountId: updateUserDto.accountId
+          ? new Types.ObjectId(updateUserDto.accountId)
+          : undefined,
+        groupId: updateUserDto.groupId
+          ? new Types.ObjectId(updateUserDto.groupId)
+          : undefined,
+        roleId: updateUserDto.roleId
+          ? new Types.ObjectId(updateUserDto.roleId)
+          : undefined,
+      };
+
+      const updatedUser: any = await this.userModel.findByIdAndUpdate(
+        id,
+        updateData,
+        {
+          new: true,
+          runValidators: true,
+        },
+      );
+
+      if (!updatedUser) {
+        await this.sendLog({
+          method: 'PATCH',
+          url: `/users/${id}`,
+          statusCode: 404,
+          operation: 'UPDATE_USER',
+          resource: 'users',
+          message: 'User not found for update',
+          userId,
+          metadata: { targetUserId: id, updateData: updateUserDto },
+          responseTime: Date.now() - startTime,
+          isError: true,
+          errorMessage: 'User not found',
+        });
+
+        throw new NotFoundException('User not found');
+      }
+
+      const result = await this.findOne(id);
+
+      await this.sendLog({
+        method: 'PATCH',
+        url: `/users/${id}`,
+        statusCode: 200,
+        operation: 'UPDATE_USER',
+        resource: 'users',
+        message: 'User updated successfully',
+        userId,
+        metadata: {
+          targetUserId: id,
+          updatedUsername: updatedUser.username,
+          updatedEmail: updatedUser.email,
+          updateData: {
+            ...updateUserDto,
+            // password: updateUserDto.password ? '[REDACTED]' : undefined,
+          },
+          fieldsUpdated: Object.keys(updateUserDto),
+        },
+        responseTime: Date.now() - startTime,
+      });
+
+      return result;
+    } catch (error) {
+      if (
+        !(error instanceof NotFoundException) &&
+        !(error instanceof ConflictException)
+      ) {
+        await this.sendLog({
+          method: 'PATCH',
+          url: `/users/${id}`,
+          statusCode: 500,
+          operation: 'UPDATE_USER',
+          resource: 'users',
+          message: 'Unexpected error while updating user',
+          userId,
+          metadata: { targetUserId: id, updateData: updateUserDto },
+          responseTime: Date.now() - startTime,
+          isError: true,
+          errorMessage: error.message,
+          stackTrace: error.stack,
+        });
+      }
+      throw error;
+    }
+  }
+
+  async remove(id: string, userId?: string): Promise<void> {
+    const startTime = Date.now();
+
+    try {
+      if (!Types.ObjectId.isValid(id)) {
+        await this.sendLog({
+          method: 'DELETE',
+          url: `/users/${id}`,
+          statusCode: 400,
+          operation: 'DELETE_USER',
+          resource: 'users',
+          message: 'Invalid user ID format',
+          userId,
+          metadata: { targetUserId: id },
+          responseTime: Date.now() - startTime,
+          isError: true,
+          errorMessage: 'Invalid user ID',
+        });
+
+        throw new NotFoundException('Invalid user ID');
+      }
+
+      const result = await this.userModel.findByIdAndDelete(id);
+
+      if (!result) {
+        await this.sendLog({
+          method: 'DELETE',
+          url: `/users/${id}`,
+          statusCode: 404,
+          operation: 'DELETE_USER',
+          resource: 'users',
+          message: 'User not found for deletion',
+          userId,
+          metadata: { targetUserId: id },
+          responseTime: Date.now() - startTime,
+          isError: true,
+          errorMessage: 'User not found',
+        });
+
+        throw new NotFoundException('User not found');
+      }
+
+      await this.sendLog({
+        method: 'DELETE',
+        url: `/users/${id}`,
+        statusCode: 200,
+        operation: 'DELETE_USER',
+        resource: 'users',
+        message: 'User deleted successfully',
+        userId,
+        metadata: {
+          deletedUserId: id,
+          deletedUsername: result.username,
+          deletedUserEmail: result.email,
+          deletedUserStatus: result.status,
+        },
+        responseTime: Date.now() - startTime,
+      });
+    } catch (error) {
+      if (!(error instanceof NotFoundException)) {
+        await this.sendLog({
+          method: 'DELETE',
+          url: `/users/${id}`,
+          statusCode: 500,
+          operation: 'DELETE_USER',
+          resource: 'users',
+          message: 'Unexpected error while deleting user',
+          userId,
+          metadata: { targetUserId: id },
+          responseTime: Date.now() - startTime,
+          isError: true,
+          errorMessage: error.message,
+          stackTrace: error.stack,
+        });
+      }
+      throw error;
+    }
+  }
+
+  async updatePassword(
+    id: string,
+    newPassword: string,
+    userId?: string,
+  ): Promise<void> {
+    const startTime = Date.now();
+
+    try {
+      if (!Types.ObjectId.isValid(id)) {
+        await this.sendLog({
+          method: 'PATCH',
+          url: `/users/${id}/password`,
+          statusCode: 400,
+          operation: 'UPDATE_USER_PASSWORD',
+          resource: 'users',
+          message: 'Invalid user ID format',
+          userId,
+          metadata: { targetUserId: id },
+          responseTime: Date.now() - startTime,
+          isError: true,
+          errorMessage: 'Invalid user ID',
+        });
+
+        throw new NotFoundException('Invalid user ID');
+      }
+
+      const saltRounds = 10;
+      const hashedPassword = await bcrypt.hash(newPassword, saltRounds);
+
+      const result = await this.userModel.findByIdAndUpdate(
+        id,
+        { password: hashedPassword },
+        { new: true },
+      );
+
+      if (!result) {
+        await this.sendLog({
+          method: 'PATCH',
+          url: `/users/${id}/password`,
+          statusCode: 404,
+          operation: 'UPDATE_USER_PASSWORD',
+          resource: 'users',
+          message: 'User not found for password update',
+          userId,
+          metadata: { targetUserId: id },
+          responseTime: Date.now() - startTime,
+          isError: true,
+          errorMessage: 'User not found',
+        });
+
+        throw new NotFoundException('User not found');
+      }
+
+      await this.sendLog({
+        method: 'PATCH',
+        url: `/users/${id}/password`,
+        statusCode: 200,
+        operation: 'UPDATE_USER_PASSWORD',
+        resource: 'users',
+        message: 'User password updated successfully',
+        userId,
+        metadata: {
+          targetUserId: id,
+          targetUsername: result.username,
+        },
+        responseTime: Date.now() - startTime,
+      });
+    } catch (error) {
+      if (!(error instanceof NotFoundException)) {
+        await this.sendLog({
+          method: 'PATCH',
+          url: `/users/${id}/password`,
+          statusCode: 500,
+          operation: 'UPDATE_USER_PASSWORD',
+          resource: 'users',
+          message: 'Unexpected error while updating password',
+          userId,
+          metadata: { targetUserId: id },
+          responseTime: Date.now() - startTime,
+          isError: true,
+          errorMessage: error.message,
+          stackTrace: error.stack,
+        });
+      }
+      throw error;
+    }
+  }
+
+  async findAllWithoutPagination(userId?: string): Promise<any[]> {
+    const startTime = Date.now();
+
     try {
       const users = await this.userModel.aggregate([
         {
@@ -575,13 +1219,43 @@ export class UserService {
         { $sort: { createdAt: -1 } },
       ]);
 
+      await this.sendLog({
+        method: 'GET',
+        url: '/users/export/data',
+        statusCode: 200,
+        operation: 'EXPORT_USERS_DATA',
+        resource: 'users',
+        message: 'Users export data retrieved successfully',
+        userId,
+        metadata: {
+          totalUsers: users.length,
+        },
+        responseTime: Date.now() - startTime,
+      });
+
       return users;
     } catch (error) {
+      await this.sendLog({
+        method: 'GET',
+        url: '/users/export/data',
+        statusCode: 500,
+        operation: 'EXPORT_USERS_DATA',
+        resource: 'users',
+        message: 'Failed to retrieve users export data',
+        userId,
+        responseTime: Date.now() - startTime,
+        isError: true,
+        errorMessage: error.message,
+        stackTrace: error.stack,
+      });
+
       throw error;
     }
   }
 
-  exportToPDF(users: any[], res: Response): void {
+  exportToPDF(users: any[], res: Response, userId?: string): void {
+    const startTime = Date.now();
+
     try {
       // Create a document with smaller margins and landscape orientation
       const doc = new PDFDocument({
@@ -606,14 +1280,14 @@ export class UserService {
       // Define table structure with better width distribution
       const table = {
         headers: [
-          { label: 'Username', width: pageWidth * 0.10 }, // 15%
+          { label: 'Username', width: pageWidth * 0.1 }, // 10%
           { label: 'Full Name', width: pageWidth * 0.2 }, // 20%
-          { label: 'Email', width: pageWidth * 0.10 }, // 25%
-          { label: 'Contact No', width: pageWidth * 0.10 }, // 15%
-          { label: 'Status', width: pageWidth * 0.10 }, // 12%
-          { label: 'Role', width: pageWidth * 0.10 }, // 13%
-          { label: 'Account', width: pageWidth * 0.10 }, // 13%
-          { label: 'Group', width: pageWidth * 0.10 }, // 13%
+          { label: 'Email', width: pageWidth * 0.1 }, // 10%
+          { label: 'Contact No', width: pageWidth * 0.1 }, // 10%
+          { label: 'Status', width: pageWidth * 0.1 }, // 10%
+          { label: 'Role', width: pageWidth * 0.1 }, // 10%
+          { label: 'Account', width: pageWidth * 0.1 }, // 10%
+          { label: 'Group', width: pageWidth * 0.1 }, // 10%
         ],
         rows: users.map((user) => [
           user.username || '',
@@ -746,15 +1420,52 @@ export class UserService {
       }
 
       doc.end();
+
+      // Log successful PDF export
+      this.sendLog({
+        method: 'GET',
+        url: '/users/export/pdf',
+        statusCode: 200,
+        operation: 'EXPORT_USERS_PDF',
+        resource: 'users',
+        message: 'Users list exported to PDF successfully',
+        userId,
+        metadata: {
+          totalUsers: users.length,
+          exportFormat: 'PDF',
+        },
+        responseTime: Date.now() - startTime,
+      });
     } catch (error) {
       console.error('Error in exportToPDF:', error);
+
+      this.sendLog({
+        method: 'GET',
+        url: '/users/export/pdf',
+        statusCode: 500,
+        operation: 'EXPORT_USERS_PDF',
+        resource: 'users',
+        message: 'Failed to export users list to PDF',
+        userId,
+        metadata: {
+          totalUsers: users.length,
+          exportFormat: 'PDF',
+        },
+        responseTime: Date.now() - startTime,
+        isError: true,
+        errorMessage: error.message,
+        stackTrace: error.stack,
+      });
+
       if (!res.headersSent) {
         res.status(500).send('Error generating PDF');
       }
     }
   }
 
-  exportToCSV(users: any[], res: Response): void {
+  exportToCSV(users: any[], res: Response, userId?: string): void {
+    const startTime = Date.now();
+
     try {
       // Set response headers
       res.setHeader('Content-Type', 'text/csv');
@@ -810,6 +1521,25 @@ export class UserService {
       // Handle stream events
       csvStream.on('error', (error) => {
         console.error('CSV stream error:', error);
+
+        this.sendLog({
+          method: 'GET',
+          url: '/users/export/csv',
+          statusCode: 500,
+          operation: 'EXPORT_USERS_CSV',
+          resource: 'users',
+          message: 'CSV stream error during export',
+          userId,
+          metadata: {
+            totalUsers: users.length,
+            exportFormat: 'CSV',
+          },
+          responseTime: Date.now() - startTime,
+          isError: true,
+          errorMessage: error.message,
+          stackTrace: error.stack,
+        });
+
         if (!res.headersSent) {
           res.status(500).send('Error generating CSV');
         }
@@ -817,18 +1547,58 @@ export class UserService {
 
       csvStream.on('end', () => {
         console.log('CSV export completed successfully');
+
+        this.sendLog({
+          method: 'GET',
+          url: '/users/export/csv',
+          statusCode: 200,
+          operation: 'EXPORT_USERS_CSV',
+          resource: 'users',
+          message: 'Users list exported to CSV successfully',
+          userId,
+          metadata: {
+            totalUsers: users.length,
+            exportFormat: 'CSV',
+          },
+          responseTime: Date.now() - startTime,
+        });
       });
 
       csvStream.end();
     } catch (error) {
       console.error('Error in exportToCSV:', error);
+
+      this.sendLog({
+        method: 'GET',
+        url: '/users/export/csv',
+        statusCode: 500,
+        operation: 'EXPORT_USERS_CSV',
+        resource: 'users',
+        message: 'Failed to export users list to CSV',
+        userId,
+        metadata: {
+          totalUsers: users.length,
+          exportFormat: 'CSV',
+        },
+        responseTime: Date.now() - startTime,
+        isError: true,
+        errorMessage: error.message,
+        stackTrace: error.stack,
+      });
+
       if (!res.headersSent) {
         res.status(500).send('Internal Server Error');
       }
     }
   }
 
-  async exportToXLSX(users: any[], res: Response): Promise<void> {
+  async exportToXLSX(
+    users: any[],
+    res: Response,
+    userId?: string,
+  ): Promise<void> {
+    const startTime = Date.now();
+
     try {
       const workbook = new ExcelJS.Workbook();
       workbook.creator = 'User Management System';
@@ -957,8 +1727,42 @@ export class UserService {
 
       await workbook.xlsx.write(res);
       res.end();
+
+      await this.sendLog({
+        method: 'GET',
+        url: '/users/export/xlsx',
+        statusCode: 200,
+        operation: 'EXPORT_USERS_XLSX',
+        resource: 'users',
+        message: 'Users list exported to XLSX successfully',
+        userId,
+        metadata: {
+          totalUsers: users.length,
+          exportFormat: 'XLSX',
+        },
+        responseTime: Date.now() - startTime,
+      });
     } catch (error) {
       console.error('Error exporting to XLSX:', error);
+
+      await this.sendLog({
+        method: 'GET',
+        url: '/users/export/xlsx',
+        statusCode: 500,
+        operation: 'EXPORT_USERS_XLSX',
+        resource: 'users',
+        message: 'Failed to export users list to XLSX',
+        userId,
+        metadata: {
+          totalUsers: users.length,
+          exportFormat: 'XLSX',
+        },
+        responseTime: Date.now() - startTime,
+        isError: true,
+        errorMessage: error.message,
+        stackTrace: error.stack,
+      });
+
       if (!res.headersSent) {
         res.status(500).send('Error generating Excel file');
       }
