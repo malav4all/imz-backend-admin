@@ -7,31 +7,29 @@ import {
 import { Reflector } from '@nestjs/core';
 
 @Injectable()
-export class PermissionsGuard implements CanActivate {
+export class RolesGuard implements CanActivate {
   constructor(private reflector: Reflector) {}
 
   canActivate(context: ExecutionContext): boolean {
-    const requiredPermissions = this.reflector.getAllAndOverride<string[]>(
-      'permissions',
-      [context.getHandler(), context.getClass()],
-    );
+    const requiredRoles = this.reflector.getAllAndOverride<string[]>('roles', [
+      context.getHandler(),
+      context.getClass(),
+    ]);
 
-    if (!requiredPermissions) {
+    if (!requiredRoles) {
       return true;
     }
 
     const request = context.switchToHttp().getRequest();
     const user = request.user;
 
-    if (!user || !user.role || !user.role.permissions) {
+    if (!user || !user.role) {
       throw new ForbiddenException('Access denied');
     }
 
-    const hasPermission = requiredPermissions.every((permission) =>
-      user.role.permissions.includes(permission),
-    );
+    const hasRole = requiredRoles.some((role) => user.role.name === role);
 
-    if (!hasPermission) {
+    if (!hasRole) {
       throw new ForbiddenException('Insufficient permissions');
     }
 

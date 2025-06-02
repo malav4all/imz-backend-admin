@@ -8,6 +8,9 @@ import { DriverModule } from './driver/driver.module';
 import { VehicleMasterModule } from './vehicle-master/vehicle-master.module';
 import { AccountModule } from './account/account.module';
 import { RoleModule } from './role/role.module';
+import { GroupsModule } from './group/group.module';
+import { DeviceOnboardingModule } from './device-onboarding/device-onboarding.module';
+import { UserModule } from './user/user.module';
 
 @Module({
   imports: [
@@ -28,6 +31,9 @@ import { RoleModule } from './role/role.module';
     VehicleMasterModule,
     AccountModule,
     RoleModule,
+    GroupsModule,
+    DeviceOnboardingModule,
+    UserModule,
   ],
   controllers: [],
   providers: [],
