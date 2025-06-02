@@ -1,5 +1,6 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
+import { StatusType } from 'src/driver/schema/driver.schema';
 
 export type RoleDocument = Role & Document;
 
@@ -46,8 +47,8 @@ export class Role {
   @Prop({ type: [{ module: String, permissions: [String] }], required: true })
   modulePermissions: ModulePermission[];
 
-  @Prop({ default: true })
-  isActive: boolean;
+  @Prop({ required: true, enum: StatusType, default: StatusType.ACTIVE })
+  status: StatusType;
 
   @Prop({ default: false })
   isSystem: boolean; // System roles cannot be deleted

@@ -8,6 +8,7 @@ import {
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { Module, Permission, UserRole } from '../schema/role-schema';
+import { StatusType } from 'src/driver/schema/driver.schema';
 
 export class ModulePermissionDto {
   @IsEnum(Module)
@@ -33,7 +34,6 @@ export class CreateRoleDto {
   @Type(() => ModulePermissionDto)
   modulePermissions: ModulePermissionDto[];
 
-  @IsOptional()
-  @IsBoolean()
-  isActive?: boolean;
+  @IsEnum(StatusType)
+  status: StatusType;
 }

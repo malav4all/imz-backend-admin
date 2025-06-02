@@ -23,6 +23,9 @@ export class Account {
 
   @Prop({ type: [{ type: Types.ObjectId, ref: 'Account' }], default: [] })
   children: Types.ObjectId[];
+
+  @Prop({ required: true })
+  status: string;
 }
 
 export const AccountSchema = SchemaFactory.createForClass(Account);

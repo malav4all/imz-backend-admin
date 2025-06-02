@@ -1,6 +1,11 @@
 import { Prop, Schema, SchemaFactory } from '@nestjs/mongoose';
 import { Document } from 'mongoose';
 
+export enum StatusType {
+  ACTIVE = 'active',
+  INACTIVE = 'inactive',
+}
+
 export type DriverDocument = Driver & Document;
 
 @Schema({
@@ -23,8 +28,8 @@ export class Driver {
   @Prop({ required: true, trim: true, unique: true })
   adharNo: string;
 
-  @Prop({ default: true })
-  isActive: boolean;
+  @Prop({ required: true, enum: StatusType, default: StatusType.ACTIVE })
+  status: StatusType;
 }
 
 export const DriverSchema = SchemaFactory.createForClass(Driver);

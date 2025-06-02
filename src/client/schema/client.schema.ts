@@ -34,6 +34,9 @@ export class Client {
 
   @Prop()
   remark?: string;
+
+  @Prop({ required: true })
+  status: string;
 }
 
 export const ClientSchema = SchemaFactory.createForClass(Client);

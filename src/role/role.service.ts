@@ -656,7 +656,7 @@ export class RoleService {
         throw new BadRequestException('Cannot deactivate system role');
       }
 
-      role.isActive = false;
+      // role.status = 'incative';
       const savedRole = await role.save();
 
       await this.sendLog({
@@ -927,9 +927,7 @@ export class RoleService {
         // Role header
         doc.fontSize(14).text(`Role: ${role.displayName}`, { underline: true });
         doc.fontSize(10).text(`Description: ${role.description}`);
-        doc
-          .fontSize(10)
-          .text(`Status: ${role.isActive ? 'Active' : 'Inactive'}`);
+        doc.fontSize(10).text(`Status: ${role.status ? 'Active' : 'Inactive'}`);
         doc
           .fontSize(10)
           .text(`System Role: ${role.isSystem ? 'Yes' : 'No'}`)
@@ -1077,7 +1075,7 @@ export class RoleService {
           Role: role.name,
           'Display Name': role.displayName,
           Description: role.description,
-          Status: role.isActive ? 'Active' : 'Inactive',
+          Status: role.status ? 'Active' : 'Inactive',
           'System Role': role.isSystem ? 'Yes' : 'No',
         };
 

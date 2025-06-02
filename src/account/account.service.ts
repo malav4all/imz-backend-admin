@@ -1324,6 +1324,7 @@ export class AccountService {
         level: desc.level,
         hierarchyPath: desc.hierarchyPath,
         client: desc.client || null,
+        status: desc.status || 'active',
         children: [],
       });
     });

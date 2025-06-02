@@ -6,9 +6,11 @@ import {
   IsBoolean,
   Matches,
   Length,
+  IsEnum,
 } from 'class-validator';
 import { Transform } from 'class-transformer';
 import { PaginationDto } from 'src/comman/pagination.dto';
+import { StatusType } from '../schema/driver.schema';
 
 export class CreateDriverDto {
   @IsNotEmpty()
@@ -39,6 +41,9 @@ export class CreateDriverDto {
   @IsString()
   @Matches(/^\d{12}$/, { message: 'Aadhaar number must be exactly 12 digits' })
   adharNo: string;
+
+  @IsEnum(StatusType)
+  status: StatusType;
 }
 
 export class UpdateDriverDto {
@@ -71,9 +76,8 @@ export class UpdateDriverDto {
   @Matches(/^\d{12}$/, { message: 'Aadhaar number must be exactly 12 digits' })
   adharNo?: string;
 
-  @IsOptional()
-  @IsBoolean()
-  isActive?: boolean;
+  @IsEnum(StatusType)
+  status: StatusType;
 }
 
 export class SearchDriverDto extends PaginationDto {

@@ -13,10 +13,8 @@ export class CreateAccountDto {
   @IsMongoId()
   @IsNotEmpty()
   clientId: string;
-}
 
-// export class UpdateAccountDto {
-//   @IsString()
-//   @IsOptional()
-//   accountName?: string;
-// }
+  @IsString()
+  @IsNotEmpty()
+  status: string;
+}

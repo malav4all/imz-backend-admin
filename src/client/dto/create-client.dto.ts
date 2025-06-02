@@ -61,6 +61,10 @@ export class CreateClientDto {
   @IsString()
   @IsOptional()
   remark?: string;
+
+  @IsString()
+  @IsOptional()
+  status: string;
 }
 
 export class UpdateClientDto {

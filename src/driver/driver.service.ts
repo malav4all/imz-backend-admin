@@ -860,7 +860,7 @@ export class DriverService {
           driver.email || '',
           driver.licenseNo || '',
           driver.adharNo || '',
-          driver.isActive ? 'Active' : 'Inactive',
+          driver.status ? 'Active' : 'Inactive',
         ]),
         rowHeight: 25,
         margin: { top: 40 },
@@ -1013,7 +1013,7 @@ export class DriverService {
           Email: driver.email || 'N/A',
           'License No': driver.licenseNo || 'N/A',
           'Aadhaar No': driver.adharNo || 'N/A',
-          Status: driver.isActive ? 'Active' : 'Inactive',
+          Status: driver.status ? 'Active' : 'Inactive',
           // 'Created At': driver.createdAt
           //   ? new Date(driver.createdAt)
           //       .toISOString()
@@ -1177,7 +1177,7 @@ export class DriverService {
           email: driver.email || 'N/A',
           licenseNo: driver.licenseNo || 'N/A',
           adharNo: driver.adharNo || 'N/A',
-          status: driver.isActive ? 'Active' : 'Inactive',
+          status: driver.status ? 'Active' : 'Inactive',
           // createdAt: driver.createdAt,
           // updatedAt: driver.updatedAt,
         });
